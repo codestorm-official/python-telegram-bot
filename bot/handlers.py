@@ -44,7 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     name = user.first_name if user and user.first_name else "friend"
     await message.reply_text(
-        f"Hello, {name}! The bot is running.\n\n"
+        f"Привет, {name}! Пупупум тестик.\n\n"
         "Choose a menu button below or type /help to see the available commands.",
         reply_markup=MAIN_MENU_KEYBOARD,
     )

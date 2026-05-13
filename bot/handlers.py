@@ -16,7 +16,7 @@ BOT_COMMANDS = (
 )
 
 MENU_HELP = "Help"
-MENU_ABOUT = "About"
+MENU_ABOUT = "About"уццу
 MENU_PING = "Ping"
 
 MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(

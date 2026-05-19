@@ -1,44 +1,60 @@
-"""Entrypoint for the Telegram bot."""
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-import logging
-
-from telegram import Update
-from telegram.ext import Application, ApplicationBuilder
-
-from bot.config import Settings
-from bot.handlers import error_handler, register_handlers, set_bot_commands
+TOKEN = os.getenv("TOKEN")
+CHANNEL = "@shrimpege"
+YOUR_TG = "https://t.me/Pablos777n"
 
 
-logger = logging.getLogger(__name__)
+def keyboard_main():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Получить шпоры", url="https://t.me/shrimpege")],
+        [InlineKeyboardButton("Я подписался", callback_data="check")]
+    ])
 
 
-def configure_logging(level_name: str) -> None:
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
-        level=level,
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Добрый день, это shrimpEGE 👋\n\n"
+        "Чтобы получить шпоры на 80+ баллов, подпишитесь на канал 👇",
+        reply_markup=keyboard_main()
     )
 
 
-def build_application(settings: Settings) -> Application:
-    application = (
-        ApplicationBuilder()
-        .token(settings.bot_token)
-        .post_init(set_bot_commands)
-        .build()
-    )
-    register_handlers(application)
-    application.add_error_handler(error_handler)
-    return application
+async def check_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    try:
+        member = await context.bot.get_chat_member(CHANNEL, user_id)
+        is_sub = member.status in ["member", "administrator", "creator"]
+    except:
+        is_sub = False
+
+    if not is_sub:
+        await query.edit_message_text(
+            "ой похоже кто-то не подписался 😏",
+            reply_markup=keyboard_main()
+        )
+    else:
+        await query.edit_message_text(
+            "Хорош 😎\nНапиши мне, и я дам тебе шпоры",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Написать мне", url=YOUR_TG)]
+            ])
+        )
 
 
-def main() -> None:
-    settings = Settings.from_env()
-    configure_logging(settings.log_level)
+def main():
+    app = Application.builder().token(TOKEN).build()
 
-    application = build_application(settings)
-    logger.info("Bot is running with polling.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(check_sub, pattern="check"))
+
+    app.run_polling()
 
 
 if __name__ == "__main__":

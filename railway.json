@@ -1,12 +1,934 @@
-{
-  "$schema": "https://railway.com/railway.schema.json",
-  "build": {
-    "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile"
-  },
-  "deploy": {
-    "startCommand": "python -m bot.main",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
-}
+import telebot
+import json
+import os
+import time
+import logging
+import threading
+from datetime import datetime, timedelta
+import requests
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+
+# ============================================================
+# تنظیمات (توکن‌ها و متغیرها در خود کد)
+# ============================================================
+TOKEN = "8611627525:AAEjBXsS1G8AzzMo9SULiWxrYr0gEgkKMwI"
+ADMIN_ID = 8356825459
+CHANNEL_ID = "@Vpn_IRan140"
+CHANNEL_LINK = "https://t.me/Vpn_IRan140"
+WEBSITE = "https://vpnir.netlify.app"
+SUPPORT_ID = "@ad_vpnir"
+OPENROUTER_KEY = "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"
+
+# ============================================================
+# قیمت‌ها
+# ============================================================
+VPN_PRICE_VIP = 10000
+VPN_PRICE_CIP = 7000
+VPN_PRICE_CUSTOM = 15000
+STARS_PRICE = 4000
+UNLIMITED_PRICE = 399000
+VPN_MIN_GB = 15
+VPN_MAX_GB = 100
+STARS_MIN = 50
+STARS_MAX = 10000000
+
+CARD_NUMBER = "6280231392863212"
+CARD_OWNER = "امیرحسین صراف زاده"
+BANK_NAME = "بانک مسکن"
+SHABA_NUMBER = "IR620140040004110181136923"
+SHABA_LIMIT = 15000000
+
+DATA_FILE = "users_data.json"
+bot = telebot.TeleBot(TOKEN)
+
+# ============================================================
+# دیتابیس
+# ============================================================
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            for uid in data.get("users", {}):
+                data["users"][uid].setdefault("purchases", [])
+                data["users"][uid].setdefault("servers", [])
+                data["users"][uid].setdefault("balance", 0)
+                data["users"][uid].setdefault("register_date", datetime.now().strftime("%Y-%m-%d %H:%M"))
+                data["users"][uid].setdefault("is_banned", False)
+            return data
+    return {"users": {}, "pending": {}, "banned": [], "orders": []}
+
+def save_data(data):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def init_user(user_id, username=None):
+    data = load_data()
+    user_id = str(user_id)
+    if user_id not in data["users"]:
+        data["users"][user_id] = {
+            "username": username,
+            "purchases": [],
+            "servers": [],
+            "balance": 0,
+            "register_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "is_banned": False
+        }
+        save_data(data)
+    return data["users"][user_id]
+
+def get_pending(user_id):
+    data = load_data()
+    return data["pending"].get(str(user_id))
+
+def set_pending(user_id, order):
+    data = load_data()
+    data["pending"][str(user_id)] = order
+    save_data(data)
+
+def remove_pending(user_id):
+    data = load_data()
+    if str(user_id) in data["pending"]:
+        del data["pending"][str(user_id)]
+        save_data(data)
+
+def add_purchase(user_id, product_name, server_info=None):
+    data = load_data()
+    user_id = str(user_id)
+    if user_id not in data["users"]:
+        init_user(user_id)
+    data["users"][user_id]["purchases"].append({
+        "product": product_name,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "server": server_info
+    })
+    if server_info:
+        data["users"][user_id]["servers"].append(server_info)
+    save_data(data)
+
+def get_banned():
+    data = load_data()
+    return data.get("banned", [])
+
+def ban_user(user_id):
+    data = load_data()
+    user_id = str(user_id)
+    if user_id not in data["banned"]:
+        data["banned"].append(user_id)
+        save_data(data)
+
+def unban_user(user_id):
+    data = load_data()
+    user_id = str(user_id)
+    if user_id in data["banned"]:
+        data["banned"].remove(user_id)
+        save_data(data)
+
+def get_expiry_date(days=30):
+    return (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+def get_payment_info(amount):
+    if amount >= SHABA_LIMIT:
+        return f"""
+💳 لطفاً مبلغ رو به شبا زیر واریز کن:
+<code>{SHABA_NUMBER}</code>
+👤 {CARD_OWNER}
+🏦 {BANK_NAME}
+⚠️ مبلغ بالای ۱۵ میلیون، فقط از طریق شبا قابل پرداخت است.
+"""
+    else:
+        return f"""
+💳 لطفاً مبلغ رو به کارت زیر واریز کن:
+<code>{CARD_NUMBER}</code>
+👤 {CARD_OWNER}
+🏦 {BANK_NAME}
+"""
+
+# ============================================================
+# کیبوردها
+# ============================================================
+def main_keyboard():
+    keyboard = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    keyboard.add("🛒 خرید VPN", "⭐ خرید استارز")
+    keyboard.add("📊 خریدهای من", "🌐 سرویس‌های من")
+    keyboard.add("📞 پشتیبانی")
+    return keyboard
+
+def admin_keyboard():
+    keyboard = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    keyboard.add("📋 سفارشات در انتظار", "👥 لیست کاربران")
+    keyboard.add("📨 پیام همگانی", "📊 آمار فروش")
+    keyboard.add("🚫 بن/آنبن کاربر", "🔙 برگشت")
+    return keyboard
+
+def vpn_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("💎 VIP (۱۰ تومن/گیگ)", callback_data="vpn_vip"),
+        InlineKeyboardButton("🔷 CIP (۷ تومن/گیگ)", callback_data="vpn_cip")
+    )
+    keyboard.add(
+        InlineKeyboardButton("📦 حجمی دلخواه (۱۵ تومن/گیگ)", callback_data="vpn_custom"),
+        InlineKeyboardButton("🚀 سرور نامحدود (۳۹۹ تومن)", callback_data="vpn_unlimited")
+    )
+    keyboard.add(InlineKeyboardButton("🔙 برگشت", callback_data="back"))
+    return keyboard
+
+def confirm_keyboard(user_id):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ تایید", callback_data=f"confirm_{user_id}"),
+        InlineKeyboardButton("❌ رد", callback_data=f"reject_{user_id}")
+    )
+    return keyboard
+
+def cancel_payment_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="cancel_payment"))
+    return keyboard
+
+def channel_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(InlineKeyboardButton("📢 عضویت در کانال", url=CHANNEL_LINK))
+    keyboard.add(InlineKeyboardButton("✅ عضویت را تایید کردم", callback_data="check_membership"))
+    return keyboard
+
+def stars_type_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("👤 خودم", callback_data="stars_self"),
+        InlineKeyboardButton("👥 شخص دیگر", callback_data="stars_other")
+    )
+    keyboard.add(InlineKeyboardButton("🔙 برگشت", callback_data="back"))
+    return keyboard
+
+def support_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("📋 سوالات متداول", callback_data="faq"),
+        InlineKeyboardButton("🤖 پشتیبانی هوشمند", callback_data="support_ai"),
+        InlineKeyboardButton("👤 ارتباط با ادمین", callback_data="support_admin")
+    )
+    keyboard.add(InlineKeyboardButton("🔙 برگشت", callback_data="back"))
+    return keyboard
+
+UNLIMITED_CONTRACT = """
+⚠️ قرارداد سرور نامحدود
+1️⃣ این سرویس بدون پشتیبانی ارائه می‌شود.
+2️⃣ در صورت قطعی، هیچ مسئولیتی بر عهده ما نیست.
+3️⃣ این سرویس غیرقابل بازگشت است.
+4️⃣ حجم استفاده نامحدود می‌باشد.
+5️⃣ مدت زمان سرویس ۳۰ روز است.
+💳 قیمت: ۳۹۹,۰۰۰ تومان
+"""
+
+FAQ_TEXT = """
+📋 سوالات متداول:
+
+❓ VIP و اقتصادی چه فرقی دارن؟
+🔹 VIP: پروتکل تانل، سرعت بالا، در قطعی اینترنت در دسترس — ۱۰ تومن/گیگ
+🔹 CIP: پروتکل سبک‌تر، مقرون‌به‌صرفه‌تر — ۷ تومن/گیگ
+🔹 حجمی دلخواه: خودتون حجم دلخواهتون رو انتخاب می‌کنید — ۱۵ تومن/گیگ
+
+❓ هیچ محدودیت کاربری داره؟
+🔹 نه، می‌تونید با هر تعداد دستگاه متصل بشید.
+
+❓ مدت زمان سرویس چقدره؟
+🔹 همه سرویس‌ها ۳۰ روزه هستن.
+
+❓ چقدر طول میکشه فعال بشه؟
+🔹 بعد از ارسال رسید، حداکثر ۱ ساعت.
+
+❓ چطور سرویس‌های من رو ببینم؟
+🔹 از دکمه 🌐 سرویس‌های من در منوی اصلی.
+
+❓ روش‌های پرداخت چیه؟
+🔹 کارت به کارت / شبا (بالای ۱۵ میلیون)
+
+❓ چطور با پشتیبانی تماس بگیرم؟
+🔹 از گزینه 📞 پشتیبانی.
+"""
+
+# ============================================================
+# چک عضویت
+# ============================================================
+def is_member(user_id):
+    try:
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except:
+        return False
+
+# ============================================================
+# استارت
+# ============================================================
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = str(message.from_user.id)
+    if user_id in get_banned():
+        bot.reply_to(message, "🚫 شما بن هستید.")
+        return
+    if not is_member(int(user_id)):
+        bot.reply_to(message, f"⚠️ برای استفاده از ربات باید عضو کانال {CHANNEL_ID} بشی.", reply_markup=channel_keyboard())
+        return
+    init_user(user_id, message.from_user.username)
+    if str(user_id) == str(ADMIN_ID):
+        bot.reply_to(message, f"""
+👋 سلام ادمین عزیز! خوش اومدی!
+
+🇮🇷 پنل مدیریت Vpn IR
+
+✅ مدیریت سفارشات
+✅ مدیریت کاربران
+✅ ارسال پیام همگانی
+✅ آمار فروش
+
+📊 از دکمه‌های زیر استفاده کن.
+""", reply_markup=admin_keyboard())
+    else:
+        bot.reply_to(message, f"""
+👋 سلام {message.from_user.first_name} عزیز! خوش اومدی!
+
+🇮🇷 ربات Vpn IR
+
+✅ فروش VPN (VIP / CIP / حجمی دلخواه / نامحدود)
+✅ فروش استارز تلگرام
+✅ تحویل فوری | پشتیبانی ۲۴/۷
+
+📢 کانال: {CHANNEL_ID}
+🌍 سایت: {WEBSITE}
+
+📌 از دکمه‌های زیر استفاده کن.
+""", reply_markup=main_keyboard())
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_membership")
+def check_membership(call):
+    user_id = str(call.from_user.id)
+    if is_member(int(user_id)):
+        init_user(user_id, call.from_user.username)
+        bot.edit_message_text("✅ عضویت شما تایید شد!", call.message.chat.id, call.message.message_id)
+        if str(user_id) == str(ADMIN_ID):
+            bot.send_message(call.message.chat.id, f"""
+👋 سلام ادمین عزیز! خوش اومدی!
+🇮🇷 پنل مدیریت Vpn IR
+📊 از دکمه‌های زیر استفاده کن.
+""", reply_markup=admin_keyboard())
+        else:
+            bot.send_message(call.message.chat.id, f"""
+👋 سلام {call.from_user.first_name} عزیز! خوش اومدی!
+🇮🇷 ربات Vpn IR
+📌 از دکمه‌های زیر استفاده کن.
+""", reply_markup=main_keyboard())
+    else:
+        bot.answer_callback_query(call.id, "❌ هنوز عضو نشدی!", show_alert=True)
+
+# ============================================================
+# دکمه‌ها
+# ============================================================
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_buttons(message):
+    user_id = str(message.from_user.id)
+    if user_id in get_banned():
+        bot.reply_to(message, "🚫 شما بن هستید.")
+        return
+    if not is_member(int(user_id)):
+        bot.reply_to(message, f"⚠️ اول عضو کانال {CHANNEL_ID} شو.", reply_markup=channel_keyboard())
+        return
+
+    if message.text == "📋 سفارشات در انتظار" and str(user_id) == str(ADMIN_ID):
+        show_pending_orders(message); return
+    if message.text == "👥 لیست کاربران" and str(user_id) == str(ADMIN_ID):
+        show_users_list(message); return
+    if message.text == "📨 پیام همگانی" and str(user_id) == str(ADMIN_ID):
+        bot.reply_to(message, "📨 پیام همگانی رو بنویس:")
+        bot.register_next_step_handler(message, broadcast_message); return
+    if message.text == "📊 آمار فروش" and str(user_id) == str(ADMIN_ID):
+        show_stats(message); return
+    if message.text == "🚫 بن/آنبن کاربر" and str(user_id) == str(ADMIN_ID):
+        bot.reply_to(message, "✏️ برای بن: /ban [id]\nبرای آنبن: /unban [id]"); return
+    if message.text == "🔙 برگشت" and str(user_id) == str(ADMIN_ID):
+        bot.reply_to(message, "🔙 برگشتی.", reply_markup=main_keyboard()); return
+
+    if message.text == "🛒 خرید VPN":
+        text = """
+🌟 لطفاً یکی از پلن‌های زیر رو انتخاب کن:
+
+💎 VIP — ۱۰,۰۰۰ تومان/گیگ (تانل، سرعت بالا)
+🔷 CIP — ۷,۰۰۰ تومان/گیگ (مقرون‌به‌صرفه)
+📦 حجمی دلخواه — ۱۵,۰۰۰ تومان/گیگ
+🚀 سرور نامحدود — ۳۹۹,۰۰۰ تومان
+
+⌛ مدت زمان همه: ۳۰ روز
+"""
+        bot.reply_to(message, text, reply_markup=vpn_keyboard())
+    elif message.text == "⭐ خرید استارز":
+        bot.reply_to(message, f"""
+⭐ خرید استارز:
+📌 تعداد استارز رو بنویس:
+🔔 هر عدد = {STARS_PRICE:,} تومان
+🔔 حداقل {STARS_MIN} عدد
+🔔 حداکثر {STARS_MAX:,} عدد
+مثال: 100
+""")
+        bot.register_next_step_handler(message, get_stars_count)
+    elif message.text == "📊 خریدهای من":
+        show_my_purchases(message)
+    elif message.text == "🌐 سرویس‌های من":
+        show_my_servers(message)
+    elif message.text == "📞 پشتیبانی":
+        bot.reply_to(message, "📌 لطفاً یکی از گزینه‌های زیر رو انتخاب کن:", reply_markup=support_keyboard())
+
+# ============================================================
+# بخش VPN
+# ============================================================
+@bot.callback_query_handler(func=lambda call: call.data == "vpn_vip")
+def buy_vip_vpn(call):
+    bot.edit_message_text(
+        f"""
+💎 سرویس VIP
+🔹 قیمت: ۱۰,۰۰۰ تومان/گیگ
+🔹 حداقل: {VPN_MIN_GB} گیگ | حداکثر: {VPN_MAX_GB} گیگ
+🔹 مدت: ۳۰ روز
+
+✏️ حجم مورد نظر رو بنویس:
+""", call.message.chat.id, call.message.message_id)
+    bot.register_next_step_handler(call.message, get_vpn_volume, "vip")
+    bot.answer_callback_query(call.id, "📝")
+
+@bot.callback_query_handler(func=lambda call: call.data == "vpn_cip")
+def buy_cip_vpn(call):
+    bot.edit_message_text(
+        f"""
+🔷 سرویس CIP
+🔹 قیمت: ۷,۰۰۰ تومان/گیگ
+🔹 حداقل: {VPN_MIN_GB} گیگ | حداکثر: {VPN_MAX_GB} گیگ
+🔹 مدت: ۳۰ روز
+
+✏️ حجم مورد نظر رو بنویس:
+""", call.message.chat.id, call.message.message_id)
+    bot.register_next_step_handler(call.message, get_vpn_volume, "cip")
+    bot.answer_callback_query(call.id, "📝")
+
+@bot.callback_query_handler(func=lambda call: call.data == "vpn_custom")
+def buy_custom_vpn(call):
+    bot.edit_message_text(
+        f"""
+📦 سرویس حجمی دلخواه
+🔹 قیمت: ۱۵,۰۰۰ تومان/گیگ
+🔹 حداقل: {VPN_MIN_GB} گیگ | حداکثر: {VPN_MAX_GB} گیگ
+🔹 مدت: ۳۰ روز
+
+✏️ حجم مورد نظر رو بنویس:
+""", call.message.chat.id, call.message.message_id)
+    bot.register_next_step_handler(call.message, get_vpn_volume, "custom")
+    bot.answer_callback_query(call.id, "📝")
+
+def get_vpn_volume(message, plan_type):
+    if not message or not message.text:
+        bot.reply_to(message, "❌ لغو شد.")
+        return
+    
+    user_id = str(message.from_user.id)
+    text = message.text.strip()
+    
+    if not text.isdigit():
+        bot.reply_to(message, f"❌ عدد بین {VPN_MIN_GB} تا {VPN_MAX_GB}:")
+        bot.register_next_step_handler(message, get_vpn_volume, plan_type)
+        return
+    
+    gb = int(text)
+    if gb < VPN_MIN_GB or gb > VPN_MAX_GB:
+        bot.reply_to(message, f"❌ بین {VPN_MIN_GB} تا {VPN_MAX_GB}:")
+        bot.register_next_step_handler(message, get_vpn_volume, plan_type)
+        return
+    
+    prices = {"vip": VPN_PRICE_VIP, "cip": VPN_PRICE_CIP, "custom": VPN_PRICE_CUSTOM}
+    labels = {"vip": "💎 VIP", "cip": "🔷 CIP", "custom": "📦 حجمی دلخواه"}
+    
+    price = gb * prices[plan_type]
+    product_name = f"{labels[plan_type]} {gb} گیگ"
+    
+    set_pending(user_id, {
+        "type": "vpn",
+        "product": product_name,
+        "amount": price,
+        "gb": gb,
+        "plan": plan_type,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "expiry": get_expiry_date(30)
+    })
+    
+    bot.send_message(
+        message.chat.id,
+        f"""
+🛒 سفارش شما:
+📦 {product_name}
+💰 قیمت: {price:,} تومان
+⏳ مدت: ۳۰ روز
+
+{get_payment_info(price)}
+
+📤 بعد از واریز، عکس رسید رو بفرست.
+""",
+        reply_markup=cancel_payment_keyboard(),
+        parse_mode="HTML"
+    )
+
+# ============================================================
+# سرور نامحدود
+# ============================================================
+@bot.callback_query_handler(func=lambda call: call.data == "vpn_unlimited")
+def buy_unlimited(call):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ موافقت می‌کنم", callback_data="accept_unlimited"),
+        InlineKeyboardButton("❌ رد", callback_data="back_to_main")
+    )
+    bot.edit_message_text(UNLIMITED_CONTRACT, call.message.chat.id, call.message.message_id, reply_markup=keyboard)
+    bot.answer_callback_query(call.id, "📋")
+
+@bot.callback_query_handler(func=lambda call: call.data == "accept_unlimited")
+def accept_unlimited(call):
+    user_id = str(call.from_user.id)
+    product_name = "🚀 سرور نامحدود (بدون پشتیبانی)"
+    price = UNLIMITED_PRICE
+    set_pending(user_id, {
+        "type": "vpn",
+        "product": product_name,
+        "amount": price,
+        "gb": "نامحدود",
+        "unlimited": True,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "expiry": get_expiry_date(30)
+    })
+    bot.edit_message_text(
+        f"""
+🛒 سفارش شما:
+📦 {product_name}
+💰 قیمت: {price:,} تومان
+⏳ مدت: ۳۰ روز
+⚠️ بدون پشتیبانی
+
+{get_payment_info(price)}
+
+📤 بعد از واریز، عکس رسید رو بفرست.
+""",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=cancel_payment_keyboard(),
+        parse_mode="HTML"
+    )
+    bot.answer_callback_query(call.id, "✅")
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_payment")
+def cancel_payment(call):
+    user_id = str(call.from_user.id)
+    remove_pending(user_id)
+    bot.edit_message_text("🔙 به منوی اصلی برگشتی.", call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "📋 منوی اصلی:", reply_markup=main_keyboard())
+    bot.answer_callback_query(call.id, "🔙")
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+def back_to_main(call):
+    user_id = str(call.from_user.id)
+    bot.edit_message_text("🔙 برگشتی.", call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "📋 منوی اصلی:", reply_markup=main_keyboard())
+    bot.answer_callback_query(call.id, "🔙")
+
+# ============================================================
+# بخش استارز
+# ============================================================
+def get_stars_count(message):
+    if not message or not message.text:
+        bot.reply_to(message, "❌ لغو شد.")
+        return
+    
+    user_id = str(message.from_user.id)
+    text = message.text.strip()
+    
+    if not text.isdigit():
+        bot.reply_to(message, f"❌ عدد بین {STARS_MIN} تا {STARS_MAX}:")
+        bot.register_next_step_handler(message, get_stars_count)
+        return
+    
+    count = int(text)
+    if count < STARS_MIN or count > STARS_MAX:
+        bot.reply_to(message, f"❌ بین {STARS_MIN} تا {STARS_MAX}:")
+        bot.register_next_step_handler(message, get_stars_count)
+        return
+    
+    price = count * STARS_PRICE
+    data = load_data()
+    if user_id not in data["pending"]:
+        data["pending"][user_id] = {}
+    data["pending"][user_id]["stars_count"] = count
+    data["pending"][user_id]["stars_price"] = price
+    save_data(data)
+    
+    bot.reply_to(message, "📌 استارز برای چه کسی؟", reply_markup=stars_type_keyboard())
+
+@bot.callback_query_handler(func=lambda call: call.data in ["stars_self", "stars_other"])
+def handle_stars_type(call):
+    user_id = str(call.from_user.id)
+    data = load_data()
+    
+    if user_id not in data["pending"] or "stars_count" not in data["pending"][user_id]:
+        bot.answer_callback_query(call.id, "❌ اول تعداد رو وارد کن!")
+        return
+    
+    count = data["pending"][user_id]["stars_count"]
+    price = data["pending"][user_id]["stars_price"]
+    
+    if call.data == "stars_self":
+        target = call.from_user.username or str(user_id)
+        product_name = f"⭐ استارز {count} عددی برای @{target}"
+        set_pending(user_id, {
+            "type": "stars",
+            "product": product_name,
+            "amount": price,
+            "count": count,
+            "target": "self",
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        bot.edit_message_text(
+            f"""
+🛒 سفارش شما:
+📦 {product_name}
+💰 قیمت: {price:,} تومان
+👤 برای: خودتان
+
+{get_payment_info(price)}
+
+📤 بعد از واریز، عکس رسید رو بفرست.
+""",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=cancel_payment_keyboard(),
+            parse_mode="HTML"
+        )
+        bot.answer_callback_query(call.id, "✅ سفارش ثبت شد!")
+    else:
+        bot.edit_message_text("✏️ آیدی تلگرام شخص مورد نظر رو بنویس:", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler(call.message, get_stars_other, count, price)
+        bot.answer_callback_query(call.id, "📝")
+
+def get_stars_other(message, count, price):
+    if not message or not message.text:
+        bot.reply_to(message, "❌ لغو شد.")
+        return
+    
+    user_id = str(message.from_user.id)
+    username = message.text.strip().lstrip("@")
+    
+    if not username or len(username) < 3:
+        bot.reply_to(message, "❌ آیدی معتبر نیست:")
+        bot.register_next_step_handler(message, get_stars_other, count, price)
+        return
+    
+    product_name = f"⭐ استارز {count} عددی برای @{username}"
+    set_pending(user_id, {
+        "type": "stars",
+        "product": product_name,
+        "amount": price,
+        "count": count,
+        "target": username,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+    })
+    
+    bot.send_message(
+        message.chat.id,
+        f"""
+🛒 سفارش شما:
+📦 {product_name}
+💰 قیمت: {price:,} تومان
+👤 برای: @{username}
+
+{get_payment_info(price)}
+
+📤 بعد از واریز، عکس رسید رو بفرست.
+""",
+        reply_markup=cancel_payment_keyboard(),
+        parse_mode="HTML"
+    )
+
+# ============================================================
+# پشتیبانی
+# ============================================================
+@bot.callback_query_handler(func=lambda call: call.data == "faq")
+def show_faq(call):
+    bot.edit_message_text(FAQ_TEXT, call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id, "📋")
+
+@bot.callback_query_handler(func=lambda call: call.data == "support_ai")
+def support_ai(call):
+    bot.edit_message_text("🤖 **پشتیبانی هوشمند**\n\nسوال خود را بنویسید:", call.message.chat.id, call.message.message_id)
+    bot.register_next_step_handler(call.message, handle_ai_question)
+    bot.answer_callback_query(call.id, "🤖")
+
+def handle_ai_question(message):
+    # اینجا می‌تونی هوش مصنوعی رو وصل کنی
+    bot.reply_to(message, "🤖 در حال پردازش... (به زودی)")
+
+@bot.callback_query_handler(func=lambda call: call.data == "support_admin")
+def support_admin(call):
+    bot.edit_message_text(
+        f"""
+👤 **ارتباط با ادمین:**
+📌 آیدی ادمین: {SUPPORT_ID}
+📝 سوالت رو کامل بنویس.
+⏳ پاسخگویی: حداکثر ۳ ساعت
+""",
+        call.message.chat.id,
+        call.message.message_id
+    )
+    bot.answer_callback_query(call.id, "👤")
+
+# ============================================================
+# دریافت عکس رسید
+# ============================================================
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = str(message.from_user.id)
+    if user_id in get_banned():
+        bot.reply_to(message, "🚫 شما بن هستید.")
+        return
+    if not is_member(int(user_id)):
+        bot.reply_to(message, f"⚠️ اول عضو کانال {CHANNEL_ID} شو.")
+        return
+    
+    pending = get_pending(user_id)
+    if not pending:
+        bot.reply_to(message, "❌ سفارش فعالی نداری.")
+        return
+    
+    product_name = pending["product"]
+    amount = pending["amount"]
+    
+    try:
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        filename = f"receipt_{user_id}_{int(time.time())}.jpg"
+        with open(filename, 'wb') as f:
+            f.write(downloaded_file)
+        with open(filename, 'rb') as f:
+            bot.send_photo(ADMIN_ID, f, caption=f"""
+🔔 رسید جدید!
+👤 {message.from_user.first_name}
+🆔 {user_id}
+📦 {product_name}
+💰 {amount:,} تومان
+""", reply_markup=confirm_keyboard(user_id))
+        os.remove(filename)
+        bot.reply_to(message, "✅ رسید شما دریافت شد!")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا: {e}")
+
+# ============================================================
+# تایید و رد
+# ============================================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_"))
+def confirm_order(call):
+    user_id = call.data.replace("confirm_", "")
+    pending = get_pending(user_id)
+    if not pending:
+        bot.answer_callback_query(call.id, "❌ سفارشی نیست!")
+        return
+    
+    product_name = pending["product"]
+    
+    if pending.get("type") == "stars":
+        add_purchase(user_id, product_name)
+        remove_pending(user_id)
+        try:
+            bot.send_message(int(user_id), f"✅ خرید تایید شد!\n📦 {product_name}")
+        except:
+            pass
+        bot.edit_message_caption(f"✅ استارز ارسال شد!\n👤 {user_id}", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id, "✅")
+        return
+    
+    bot.edit_message_caption(f"📝 سرور رو ارسال کن:\n👤 {user_id}\n📦 {product_name}", call.message.chat.id, call.message.message_id)
+    msg = bot.send_message(call.message.chat.id, "📤 لطفاً سرور رو ارسال کن (متن یا عکس):")
+    bot.register_next_step_handler(msg, send_server_to_user, user_id)
+    bot.answer_callback_query(call.id, "📤")
+
+def send_server_to_user(message, user_id):
+    pending = get_pending(user_id)
+    if not pending:
+        bot.reply_to(message, "❌ سفارشی نیست!")
+        return
+    
+    product_name = pending["product"]
+    gb = pending.get("gb", 15)
+    order_date = pending.get("date", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    expiry_date = pending.get("expiry", get_expiry_date(30))
+    
+    add_purchase(user_id, product_name, f"{product_name} - {order_date}")
+    remove_pending(user_id)
+    
+    if message.content_type == 'photo':
+        try:
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            filename = f"server_{user_id}_{int(time.time())}.jpg"
+            with open(filename, 'wb') as f:
+                f.write(downloaded_file)
+            caption_text = message.caption if message.caption else ""
+            with open(filename, 'rb') as f:
+                bot.send_photo(int(user_id), f, caption=f"""
+✅ خرید شما تایید شد!
+📦 {product_name}
+🗜 حجم: {gb} گیگابایت
+📅 تاریخ خرید: {order_date}
+⏳ تاریخ انقضا: {expiry_date}
+🌐 اطلاعات سرور:
+{caption_text}
+""")
+            os.remove(filename)
+            bot.reply_to(message, "✅ سرور ارسال شد!")
+        except Exception as e:
+            bot.reply_to(message, f"❌ خطا: {e}")
+        return
+    
+    if message.content_type == 'text':
+        server_text = message.text.strip()
+        if not server_text:
+            bot.reply_to(message, "❌ خالی بود.")
+            return
+        bot.send_message(int(user_id), f"""
+✅ خرید شما تایید شد!
+📦 {product_name}
+🗜 حجم: {gb} گیگابایت
+📅 تاریخ خرید: {order_date}
+⏳ تاریخ انقضا: {expiry_date}
+🌐 اطلاعات سرور:
+{server_text}
+""")
+        bot.reply_to(message, "✅ سرور ارسال شد!")
+        return
+    
+    bot.reply_to(message, "❌ فقط متن یا عکس!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_"))
+def reject_order(call):
+    user_id = call.data.replace("reject_", "")
+    remove_pending(user_id)
+    try:
+        bot.send_message(int(user_id), "❌ خرید شما رد شد.")
+    except:
+        pass
+    bot.edit_message_caption(f"❌ رد شد!\n👤 {user_id}", call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id, "❌")
+
+# ============================================================
+# اطلاعات کاربر
+# ============================================================
+def show_my_purchases(message):
+    user_id = str(message.from_user.id)
+    data = load_data()
+    purchases = data["users"].get(user_id, {}).get("purchases", [])
+    if not purchases:
+        bot.reply_to(message, "❌ هنوز خریدی نداشتی.")
+        return
+    text = "📊 خریدهای قبلی:\n\n"
+    for i, p in enumerate(purchases, 1):
+        text += f"{i}. {p['product']}\n   📅 {p['date']}\n\n"
+    bot.reply_to(message, text)
+
+def show_my_servers(message):
+    user_id = str(message.from_user.id)
+    data = load_data()
+    servers = data["users"].get(user_id, {}).get("servers", [])
+    if not servers:
+        bot.reply_to(message, "❌ سرویسی نداری.")
+        return
+    text = "🌐 سرویس‌های شما:\n\n"
+    for i, s in enumerate(servers, 1):
+        text += f"{i}. {s}\n"
+    bot.reply_to(message, text)
+
+# ============================================================
+# پنل ادمین
+# ============================================================
+def show_pending_orders(message):
+    data = load_data()
+    pending = data.get("pending", {})
+    if not pending:
+        bot.reply_to(message, "📋 هیچ سفارشی در انتظار نیست.")
+        return
+    text = "📋 سفارشات در انتظار:\n\n"
+    for uid, order in pending.items():
+        text += f"🆔 {uid}\n📦 {order.get('product', 'نامشخص')}\n💰 {order.get('amount', 0):,} تومان\n\n"
+    bot.reply_to(message, text)
+
+def show_users_list(message):
+    data = load_data()
+    users = data.get("users", {})
+    banned = data.get("banned", [])
+    text = f"👥 لیست کاربران:\n\n📊 کل: {len(users)}\n🚫 بن‌شده: {len(banned)}\n✅ فعال: {len(users) - len(banned)}\n\n"
+    for i, uid in enumerate(list(users.keys())[:20], 1):
+        status = "🚫" if uid in banned else "✅"
+        uname = users[uid].get("username")
+        text += f"{i}. {status} {uid}" + (f" (@{uname})" if uname else "") + "\n"
+    if len(users) > 20:
+        text += f"\n... و {len(users) - 20} کاربر دیگر"
+    bot.reply_to(message, text)
+
+def show_stats(message):
+    data = load_data()
+    users = data.get("users", {})
+    orders = data.get("orders", [])
+    pending = data.get("pending", {})
+    total_sales = sum(o.get("amount", 0) for o in orders)
+    bot.reply_to(message, f"""
+📊 آمار فروش:
+👥 کل کاربران: {len(users)}
+📦 کل سفارشات: {len(orders)}
+💰 کل فروش: {total_sales:,} تومان
+⏳ سفارشات در انتظار: {len(pending)}
+📅 {datetime.now().strftime("%Y-%m-%d %H:%M")}
+""")
+
+def broadcast_message(message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+    msg = message.text.strip()
+    if not msg:
+        bot.reply_to(message, "❌ پیام خالی.")
+        return
+    data = load_data()
+    count = 0
+    for user_id in data["users"].keys():
+        if user_id in data.get("banned", []):
+            continue
+        try:
+            bot.send_message(int(user_id), f"📨 پیام از ادمین:\n\n{msg}")
+            count += 1
+        except:
+            pass
+    bot.reply_to(message, f"✅ به {count} کاربر ارسال شد.")
+
+# ============================================================
+# برگشت
+# ============================================================
+@bot.callback_query_handler(func=lambda call: call.data == "back")
+def back(call):
+    user_id = str(call.from_user.id)
+    bot.edit_message_text("🔙 برگشتی.", call.message.chat.id, call.message.message_id)
+    if str(user_id) == str(ADMIN_ID):
+        bot.send_message(call.message.chat.id, "📋 منوی ادمین:", reply_markup=admin_keyboard())
+    else:
+        bot.send_message(call.message.chat.id, "📋 منوی اصلی:", reply_markup=main_keyboard())
+
+# ============================================================
+# اجرا
+# ============================================================
+print("=" * 50)
+print("🤖 ربات Vpn IR روشن شد!")
+print(f"📢 کانال: {CHANNEL_ID}")
+print(f"👤 ادمین: {ADMIN_ID}")
+print("📱 https://t.me/Vpn_IRan140bot")
+print("=" * 50)
+
+bot.infinity_polling(skip_pending=True)

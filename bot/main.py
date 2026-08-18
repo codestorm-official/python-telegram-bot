@@ -8,8 +8,11 @@ from telegram.ext import Application, ApplicationBuilder
 from bot import cache, db
 from bot.config import Settings
 from bot.handlers import (
+    ANON_GROUP_TASKS_KEY,
     DB_KEY,
     REDIS_KEY,
+    PUBLISH_CHANNEL_ID_KEY,
+    REVIEW_CHAT_ID_KEY,
     error_handler,
     register_handlers,
     set_bot_commands,
@@ -53,9 +56,16 @@ def build_application(settings: Settings) -> Application:
         application.bot_data[REDIS_KEY] = await _connect_optional(
             "Redis", settings.redis_url, cache.create_client
         )
+        application.bot_data[REVIEW_CHAT_ID_KEY] = settings.review_chat_id
+        application.bot_data[PUBLISH_CHANNEL_ID_KEY] = settings.publish_channel_id
         await set_bot_commands(application)
 
     async def on_shutdown(application: Application) -> None:
+        tasks = application.bot_data.get(ANON_GROUP_TASKS_KEY)
+        if isinstance(tasks, dict):
+            for task in tasks.values():
+                task.cancel()
+
         pool = application.bot_data.get(DB_KEY)
         if pool is not None:
             await db.close_pool(pool)
@@ -81,7 +91,11 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     application = build_application(settings)
-    logger.info("Bot is running with polling.")
+    if settings.review_chat_id is None or settings.publish_channel_id is None:
+        logger.warning(
+            "A moderação anônima está desativada até REVIEW_CHAT_ID e PUBLISH_CHANNEL_ID serem definidos."
+        )
+    logger.info("Bot em execução com polling.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

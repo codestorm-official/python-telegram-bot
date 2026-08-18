@@ -1,6 +1,7 @@
 """PostgreSQL access layer backed by an asyncpg connection pool."""
 
 import logging
+from collections.abc import Sequence
 
 import asyncpg
 
@@ -19,6 +20,23 @@ CREATE TABLE IF NOT EXISTS users (
     first_name  TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+CREATE_ANONYMOUS_SUBMISSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS anonymous_submissions (
+    submission_id TEXT PRIMARY KEY,
+    source_chat_id BIGINT NOT NULL,
+    source_message_ids BIGINT[] NOT NULL,
+    media_group_id TEXT,
+    review_chat_id BIGINT NOT NULL,
+    review_message_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    moderator_id BIGINT,
+    published_message_ids BIGINT[],
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    decided_at TIMESTAMPTZ
 );
 """
 
@@ -43,6 +61,7 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
     )
     async with pool.acquire() as conn:
         await conn.execute(CREATE_USERS_TABLE)
+        await conn.execute(CREATE_ANONYMOUS_SUBMISSIONS_TABLE)
     logger.info("PostgreSQL pool ready (schema initialized).")
     return pool
 
@@ -61,6 +80,109 @@ async def upsert_user(
 async def count_users(pool: asyncpg.Pool) -> int:
     """Return the total number of known users."""
     return int(await pool.fetchval("SELECT count(*) FROM users;"))
+
+
+async def create_anonymous_submission(
+    pool: asyncpg.Pool,
+    submission_id: str,
+    source_chat_id: int,
+    source_message_ids: Sequence[int],
+    media_group_id: str | None,
+    review_chat_id: int,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO anonymous_submissions (
+            submission_id,
+            source_chat_id,
+            source_message_ids,
+            media_group_id,
+            review_chat_id
+        )
+        VALUES ($1, $2, $3, $4, $5);
+        """,
+        submission_id,
+        source_chat_id,
+        list(source_message_ids),
+        media_group_id,
+        review_chat_id,
+    )
+
+
+async def attach_review_message(pool: asyncpg.Pool, submission_id: str, review_message_id: int) -> None:
+    await pool.execute(
+        """
+        UPDATE anonymous_submissions
+        SET review_message_id = $2
+        WHERE submission_id = $1;
+        """,
+        submission_id,
+        review_message_id,
+    )
+
+
+async def get_anonymous_submission(pool: asyncpg.Pool, submission_id: str) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        """
+        SELECT *
+        FROM anonymous_submissions
+        WHERE submission_id = $1;
+        """,
+        submission_id,
+    )
+
+
+async def mark_anonymous_submission_approved(
+    pool: asyncpg.Pool,
+    submission_id: str,
+    moderator_id: int,
+    published_message_ids: Sequence[int],
+) -> None:
+    await pool.execute(
+        """
+        UPDATE anonymous_submissions
+        SET status = 'approved',
+            moderator_id = $2,
+            published_message_ids = $3,
+            decided_at = now(),
+            error_message = NULL
+        WHERE submission_id = $1;
+        """,
+        submission_id,
+        moderator_id,
+        list(published_message_ids),
+    )
+
+
+async def mark_anonymous_submission_rejected(
+    pool: asyncpg.Pool, submission_id: str, moderator_id: int
+) -> None:
+    await pool.execute(
+        """
+        UPDATE anonymous_submissions
+        SET status = 'rejected',
+            moderator_id = $2,
+            decided_at = now(),
+            error_message = NULL
+        WHERE submission_id = $1;
+        """,
+        submission_id,
+        moderator_id,
+    )
+
+
+async def mark_anonymous_submission_failed(pool: asyncpg.Pool, submission_id: str, error_message: str) -> None:
+    await pool.execute(
+        """
+        UPDATE anonymous_submissions
+        SET status = 'failed',
+            error_message = $2,
+            decided_at = now()
+        WHERE submission_id = $1;
+        """,
+        submission_id,
+        error_message,
+    )
 
 
 async def close_pool(pool: asyncpg.Pool) -> None:

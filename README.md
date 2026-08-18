@@ -10,27 +10,26 @@ A starter Telegram bot project built with [`python-telegram-bot`](https://python
 
 - Persistent chat menu buttons after `/start`
 - `/start`, `/help`, `/about`, and `/ping` commands
-- Echo replies for normal text messages
+- Anonymous submissions for text, photos, videos, and files with manual approval
 - Fallback handler for unknown commands
 - Error logging
-- **PostgreSQL persistence** (asyncpg): users are stored/updated on `/start`
-- **Redis integration**: per-user message counter and a short-lived `/ping` cache
+- **PostgreSQL persistence** (asyncpg): users and anonymous submissions are stored
+- **Redis integration**: short-lived `/ping` cache
 - Configuration loaded from a local `.env` file or Railway variables
 - Ready to run with Docker and Railway
 
 ## Data Stores
 
-PostgreSQL and Redis are **optional**. When `DATABASE_URL` / `REDIS_URL` are set the bot
-connects on startup; when they are missing, empty, or unreachable it logs a warning and keeps
-running with that backend disabled. This makes local testing easy, while Railway just links
-the services automatically.
+PostgreSQL and Redis are **optional** for the starter features. When `DATABASE_URL` /
+`REDIS_URL` are set the bot connects on startup; when they are missing, empty, or unreachable
+it logs a warning and keeps running with that backend disabled.
 
-- **PostgreSQL** — a `users` table is created automatically on first run. `/start` inserts
-  a new user or refreshes `username`, `first_name`, and `last_seen` for an existing one.
-  Without a database, `/start` still greets the user but nothing is persisted.
+- **PostgreSQL** — `users` and `anonymous_submissions` tables are created automatically on
+  first run. `/start` inserts a new user or refreshes `username`, `first_name`, and `last_seen`
+  for an existing one. Anonymous submissions need this database to store moderation state.
+  Without a database, `/start` still greets the user but the review flow is disabled.
 - **Redis** — `/ping` reports whether the reply came from a 10-second cache (`fresh` vs
-  `cached`), and each echoed text message increments a per-user counter. Without Redis,
-  `/ping` replies with a plain `pong` and the counter falls back to in-memory (per-process).
+  `cached`). Without Redis, `/ping` replies with a plain `pong`.
 
 Connections are pooled (asyncpg) and reused across updates, then closed cleanly on shutdown.
 
@@ -45,6 +44,20 @@ The bot shows a persistent reply keyboard after `/start` with these buttons:
 | `Ping`  | Check whether the bot is running |
 
 Telegram bots cannot display custom buttons before a user starts or messages the bot. The keyboard appears after the bot replies, then stays available in supported Telegram clients.
+
+## Anonymous Moderation Flow
+
+1. A user sends text, a photo, a video, a file, or a media group to the bot.
+2. The bot sends an anonymous preview to the review chat with Approve / Reject buttons.
+3. On approval, the bot copies the original content into the private channel.
+4. On rejection, the bot marks the submission as rejected and notifies the sender.
+
+Required environment variables for this flow:
+
+- `REVIEW_CHAT_ID` — chat where the reviewer receives pending submissions
+- `PUBLISH_CHANNEL_ID` — private channel that receives approved posts
+
+The bot must be allowed to post in the target channel and to send messages in the review chat.
 
 ## Bot Commands
 
@@ -91,6 +104,8 @@ Telegram bots cannot display custom buttons before a user starts or messages the
 | `BOT_TOKEN`    | Yes      | -       | Bot token from `@BotFather`                        |
 | `DATABASE_URL` | No       | -       | PostgreSQL connection string; omit to run without persistence |
 | `REDIS_URL`    | No       | -       | Redis connection string; omit to run without caching          |
+| `REVIEW_CHAT_ID` | No     | -       | Chat ID for manual review of anonymous submissions |
+| `PUBLISH_CHANNEL_ID` | No  | -       | Private channel ID that receives approved content  |
 | `LOG_LEVEL`    | No       | `INFO`  | Logging level, such as `DEBUG`, `INFO`, or `ERROR` |
 
 On Railway, add the **PostgreSQL** and **Redis** plugins to your project and reference their
